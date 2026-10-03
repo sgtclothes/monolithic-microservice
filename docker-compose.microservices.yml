@@ -1,0 +1,183 @@
+# =====================================================================
+#  MICROSERVICES ARCHITECTURE
+#
+#  gateway-ms (nginx) routes requests to:
+#    user-service          -> user_db
+#    product-service       -> product_db
+#    order-service         -> order_db
+#      calls product-service over HTTP (reserve/release stock)
+#      calls payment-service over HTTP -> payment_db
+#      publishes order.paid to RabbitMQ -> notification-service -> notification_db
+#    notification-service  -> notification_db
+#
+#  Start      : docker compose -f docker-compose.microservices.yml up -d --build
+#  Scale out  : docker compose -f docker-compose.microservices.yml up -d --scale order-service=3
+#  Fault test : docker compose -f docker-compose.microservices.yml stop notification-service
+#
+#  Default resource budget: all 5 services = 2 CPU / 1 GB (same as the monolith)
+#    user 0.3 | product 0.5 | order 0.6 | payment 0.3 | notification 0.3
+#  + RabbitMQ 0.5 CPU / 512 MB  -> the "extra cost" of microservices infrastructure.
+# =====================================================================
+name: tokoku-ms
+
+x-service-env: &service-env
+  THIRDPARTY_URL: http://thirdparty-mock:4000
+  JWT_SECRET: ${JWT_SECRET:-tokoku-demo-secret}
+  PASSWORD_HASH_ITERATIONS: ${PASSWORD_HASH_ITERATIONS:-100000}
+  FRAUD_CHECK_ROUNDS: ${FRAUD_CHECK_ROUNDS:-2000}
+  RABBITMQ_URL: amqp://tokoku:tokoku@rabbitmq:5672
+  WORKERS: 1
+
+services:
+  postgres-ms:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    command: ["postgres", "-c", "max_connections=300", "-c", "shared_buffers=256MB"]
+    # Exposed for DB clients (Navicat, DBeaver, psql). Bound to 127.0.0.1 so it is not
+    # reachable from the internet; on a VPS connect through an SSH tunnel.
+    ports:
+      - "${DB_BIND:-127.0.0.1}:${MS_DB_PORT:-15433}:5432"
+    volumes:
+      - pg-ms:/var/lib/postgresql/data
+      - ./db/microservices-init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    deploy:
+      resources:
+        limits:
+          cpus: "${DB_CPUS:-1}"
+          memory: ${DB_MEMORY:-1g}
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:4.1-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: tokoku
+      RABBITMQ_DEFAULT_PASS: tokoku
+    ports:
+      - "15672:15672" # management UI (tokoku / tokoku)
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    deploy:
+      resources:
+        limits:
+          cpus: "${MQ_CPUS:-0.5}"
+          memory: 512m
+    restart: unless-stopped
+
+  user-service:
+    build: { context: ./apps, args: { APP_DIR: services/user-service } }
+    image: tokoku/user-service:latest
+    environment:
+      <<: *service-env
+      SERVICE_NAME: user-service
+      DATABASE_URL: postgres://user_svc:user_svc@postgres-ms:5432/user_db
+      DB_POOL_MAX: 3
+    depends_on:
+      postgres-ms: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "${USER_CPUS:-0.3}", memory: 192m }
+    restart: unless-stopped
+
+  product-service:
+    build: { context: ./apps, args: { APP_DIR: services/product-service } }
+    image: tokoku/product-service:latest
+    environment:
+      <<: *service-env
+      SERVICE_NAME: product-service
+      DATABASE_URL: postgres://product_svc:product_svc@postgres-ms:5432/product_db
+      DB_POOL_MAX: 6
+    depends_on:
+      postgres-ms: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "${PRODUCT_CPUS:-0.5}", memory: 256m }
+    restart: unless-stopped
+
+  order-service:
+    build: { context: ./apps, args: { APP_DIR: services/order-service } }
+    image: tokoku/order-service:latest
+    environment:
+      <<: *service-env
+      SERVICE_NAME: order-service
+      DATABASE_URL: postgres://order_svc:order_svc@postgres-ms:5432/order_db
+      DB_POOL_MAX: 6
+      NOTIFICATION_MODE: ${MS_NOTIFICATION_MODE:-async}
+      PRODUCT_SERVICE_URL: http://product-service:3000
+      PAYMENT_SERVICE_URL: http://payment-service:3000
+      NOTIFICATION_SERVICE_URL: http://notification-service:3000
+    depends_on:
+      postgres-ms: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "${ORDER_CPUS:-0.6}", memory: 256m }
+    restart: unless-stopped
+
+  payment-service:
+    build: { context: ./apps, args: { APP_DIR: services/payment-service } }
+    image: tokoku/payment-service:latest
+    environment:
+      <<: *service-env
+      SERVICE_NAME: payment-service
+      DATABASE_URL: postgres://payment_svc:payment_svc@postgres-ms:5432/payment_db
+      DB_POOL_MAX: 3
+    depends_on:
+      postgres-ms: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "${PAYMENT_CPUS:-0.3}", memory: 192m }
+    restart: unless-stopped
+
+  notification-service:
+    build: { context: ./apps, args: { APP_DIR: services/notification-service } }
+    image: tokoku/notification-service:latest
+    environment:
+      <<: *service-env
+      SERVICE_NAME: notification-service
+      DATABASE_URL: postgres://notification_svc:notification_svc@postgres-ms:5432/notification_db
+      DB_POOL_MAX: 2
+    depends_on:
+      postgres-ms: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "${NOTIFICATION_CPUS:-0.3}", memory: 128m }
+    restart: unless-stopped
+
+  gateway-ms:
+    image: nginx:1.28-alpine
+    volumes:
+      - ./gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./gateway/microservices.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./gateway/storefront:/usr/share/nginx/html:ro
+    ports:
+      - "${MS_PORT:-8082}:80"
+    depends_on:
+      - user-service
+      - product-service
+      - order-service
+      - notification-service
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 256m
+    restart: unless-stopped
+
+volumes:
+  pg-ms:
+
+networks:
+  default:
+    name: tokoku
+    external: true

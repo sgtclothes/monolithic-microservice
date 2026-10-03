@@ -1,0 +1,38 @@
+# Simulated Payment Gateway & Email Provider (used by both architectures).
+# Chaos panel: kubectl -n tokoku-infra port-forward svc/thirdparty-mock 4000:4000
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: thirdparty-mock
+  labels: { app: thirdparty-mock }
+spec:
+  replicas: 1 # MUST be 1: the chaos config is kept in memory
+  selector:
+    matchLabels: { app: thirdparty-mock }
+  template:
+    metadata:
+      labels: { app: thirdparty-mock, tokoku.io/metrics: "true" }
+    spec:
+      containers:
+        - name: app
+          image: tokoku/thirdparty-mock:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: PORT, value: "4000" }
+          ports:
+            - { name: http, containerPort: 4000 }
+          resources:
+            requests: { cpu: "250m", memory: 128Mi }
+            limits: { cpu: "1", memory: 256Mi }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: thirdparty-mock
+spec:
+  type: NodePort
+  selector: { app: thirdparty-mock }
+  ports:
+    - { name: http, port: 4000, targetPort: http, nodePort: 30040 }

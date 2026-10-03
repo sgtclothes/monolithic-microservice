@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chaos Panel: Third Party</title>
+<style>
+  :root { --bg:#0f172a; --card:#1e293b; --fg:#e2e8f0; --muted:#94a3b8; --ok:#22c55e; --bad:#ef4444; --warn:#f59e0b; --accent:#38bdf8; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background:var(--bg); color:var(--fg); padding:24px 16px; }
+  main { max-width: 900px; margin: 0 auto; }
+  h1 { margin: 0 0 4px; font-size: 1.5rem; }
+  p.sub { color: var(--muted); margin: 0 0 24px; }
+  .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:16px; }
+  .card { background:var(--card); border-radius:12px; padding:16px; }
+  .card h2 { font-size:1rem; margin:0 0 12px; }
+  .status { display:inline-block; padding:2px 10px; border-radius:999px; font-size:.8rem; font-weight:600; }
+  .ok { background:#14532d; color:#bbf7d0; } .bad { background:#7f1d1d; color:#fecaca; } .warn { background:#78350f; color:#fde68a; }
+  button { font: inherit; border:0; border-radius:8px; padding:10px 14px; cursor:pointer; background:#334155; color:var(--fg); margin:4px 4px 0 0; }
+  button:hover { background:#475569; } button.primary { background:#0369a1; } button.danger { background:#b91c1c; }
+  pre { background:#020617; padding:12px; border-radius:8px; overflow:auto; font-size:.8rem; }
+  label { display:block; font-size:.85rem; color:var(--muted); margin-top:8px; }
+  input { width:100%; padding:6px 8px; border-radius:6px; border:1px solid #334155; background:#0f172a; color:var(--fg); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Chaos Panel: Third-Party Services</h1>
+  <p class="sub">Shared by the monolith &amp; microservices. Change the behavior here while a load test is running, then watch Grafana.</p>
+
+  <div class="grid">
+    <section class="card">
+      <h2>Payment Gateway <span id="payStatus" class="status ok">normal</span></h2>
+      <div id="payInfo" class="sub"></div>
+      <button data-preset="payment-slow">Slow (2-3 seconds)</button>
+      <button data-preset="payment-flaky">Flaky (30% error)</button>
+    </section>
+    <section class="card">
+      <h2>Email Provider <span id="emailStatus" class="status ok">normal</span></h2>
+      <div id="emailInfo" class="sub"></div>
+      <button class="danger" data-preset="email-down">Take down</button>
+      <button data-preset="email-slow">Slow (1.5-2.5 seconds)</button>
+    </section>
+    <section class="card">
+      <h2>Reset</h2>
+      <p class="sub">Return everything to the normal state.</p>
+      <button class="primary" data-preset="normal">Normal</button>
+    </section>
+  </div>
+
+  <section class="card" style="margin-top:16px">
+    <h2>Manual configuration</h2>
+    <div class="grid">
+      <div>
+        <label>Payment min delay (ms)<input id="pmin" type="number"></label>
+        <label>Payment max delay (ms)<input id="pmax" type="number"></label>
+        <label>Payment fail rate (0-1)<input id="pfail" type="number" step="0.05"></label>
+      </div>
+      <div>
+        <label>Email min delay (ms)<input id="emin" type="number"></label>
+        <label>Email max delay (ms)<input id="emax" type="number"></label>
+        <label>Email fail rate (0-1)<input id="efail" type="number" step="0.05"></label>
+      </div>
+    </div>
+    <button class="primary" id="apply" style="margin-top:12px">Apply</button>
+    <pre id="raw"></pre>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+function render({ config, emailsSent }) {
+  const p = config.payment, e = config.email;
+  const paySlow = p.minDelayMs > 500, payFlaky = p.failRate > 0;
+  $('payStatus').textContent = paySlow ? 'slow' : payFlaky ? 'flaky' : 'normal';
+  $('payStatus').className = 'status ' + (paySlow || payFlaky ? 'warn' : 'ok');
+  $('payInfo').textContent = `delay ${p.minDelayMs}-${p.maxDelayMs} ms, fail ${(p.failRate * 100).toFixed(0)}%`;
+  $('emailStatus').textContent = e.down ? 'DOWN' : e.minDelayMs > 500 ? 'slow' : 'normal';
+  $('emailStatus').className = 'status ' + (e.down ? 'bad' : e.minDelayMs > 500 ? 'warn' : 'ok');
+  $('emailInfo').textContent = `delay ${e.minDelayMs}-${e.maxDelayMs} ms, fail ${(e.failRate * 100).toFixed(0)}%, sent: ${emailsSent ?? '-'}`;
+  for (const [id, v] of [['pmin', p.minDelayMs], ['pmax', p.maxDelayMs], ['pfail', p.failRate], ['emin', e.minDelayMs], ['emax', e.maxDelayMs], ['efail', e.failRate]]) {
+    if (document.activeElement !== $(id)) $(id).value = v;
+  }
+  $('raw').textContent = JSON.stringify(config, null, 2);
+}
+async function refresh() { render(await (await fetch('/admin/config')).json()); }
+document.querySelectorAll('[data-preset]').forEach((b) => b.onclick = async () => {
+  await fetch('/admin/preset/' + b.dataset.preset, { method: 'POST' }); refresh();
+});
+$('apply').onclick = async () => {
+  const body = {
+    payment: { minDelayMs: +$('pmin').value, maxDelayMs: +$('pmax').value, failRate: +$('pfail').value },
+    email: { minDelayMs: +$('emin').value, maxDelayMs: +$('emax').value, failRate: +$('efail').value },
+  };
+  await fetch('/admin/config', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  refresh();
+};
+refresh(); setInterval(refresh, 2000);
+</script>
+</body>
+</html>

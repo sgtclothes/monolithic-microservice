@@ -1,0 +1,42 @@
+# Values for the kube-prometheus-stack Helm chart (Prometheus + Grafana + node-exporter
+# + kube-state-metrics). Install with:  ./scripts/k8s.sh monitoring
+#
+#   Grafana    : http://<NODE-IP>:30030   (admin / tokoku)
+#   Prometheus : http://<NODE-IP>:30090
+prometheus:
+  service:
+    type: NodePort
+    nodePort: 30090
+  prometheusSpec:
+    scrapeInterval: 5s
+    evaluationInterval: 5s
+    retention: 7d
+    # Receives k6 metrics via remote write (k6 --out experimental-prometheus-rw)
+    enableRemoteWriteReceiver: true
+    # Pick up PodMonitors from any namespace, without requiring a "release" label
+    podMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelectorNilUsesHelmValues: false
+    resources:
+      requests: { cpu: 200m, memory: 512Mi }
+
+grafana:
+  adminPassword: tokoku
+  service:
+    type: NodePort
+    nodePort: 30030
+  grafana.ini:
+    auth.anonymous:
+      enabled: true
+      org_role: Viewer
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
+      folderAnnotation: grafana_folder
+      provider:
+        foldersFromFilesStructure: true
+
+alertmanager:
+  enabled: false

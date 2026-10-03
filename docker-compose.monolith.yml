@@ -1,0 +1,89 @@
+# =====================================================================
+#  MONOLITH ARCHITECTURE
+#    gateway-mono (nginx)  ->  monolith (1 app, N worker)  ->  postgres-mono (1 database)
+#
+#  Start      : docker compose -f docker-compose.monolith.yml up -d --build
+#  Scale out  : docker compose -f docker-compose.monolith.yml up -d --scale monolith=3
+#  Scale up   : MONO_CPUS=4 MONO_WORKERS=4 docker compose -f docker-compose.monolith.yml up -d monolith
+#
+#  Default resource budget (equal to the microservices total):
+#    app 2 CPU / 1 GB, database 1 CPU / 1 GB, gateway 1 CPU / 256 MB
+# =====================================================================
+name: tokoku-mono
+
+services:
+  postgres-mono:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: tokoku
+      POSTGRES_PASSWORD: tokoku
+      POSTGRES_DB: tokoku
+    command: ["postgres", "-c", "max_connections=300", "-c", "shared_buffers=256MB"]
+    # Exposed for DB clients (Navicat, DBeaver, psql). Bound to 127.0.0.1 so it is not
+    # reachable from the internet; on a VPS connect through an SSH tunnel.
+    ports:
+      - "${DB_BIND:-127.0.0.1}:${MONO_DB_PORT:-15432}:5432"
+    volumes:
+      - pg-mono:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tokoku -d tokoku"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    deploy:
+      resources:
+        limits:
+          cpus: "${DB_CPUS:-1}"
+          memory: ${DB_MEMORY:-1g}
+    restart: unless-stopped
+
+  monolith:
+    build:
+      context: ./apps
+      args:
+        APP_DIR: monolith
+    image: tokoku/monolith:latest
+    environment:
+      SERVICE_NAME: monolith
+      WORKERS: ${MONO_WORKERS:-2}
+      DATABASE_URL: postgres://tokoku:tokoku@postgres-mono:5432/tokoku
+      DB_POOL_MAX: ${MONO_DB_POOL_MAX:-10}
+      NOTIFICATION_MODE: ${MONO_NOTIFICATION_MODE:-sync}
+      THIRDPARTY_URL: http://thirdparty-mock:4000
+      JWT_SECRET: ${JWT_SECRET:-tokoku-demo-secret}
+      PASSWORD_HASH_ITERATIONS: ${PASSWORD_HASH_ITERATIONS:-100000}
+      FRAUD_CHECK_ROUNDS: ${FRAUD_CHECK_ROUNDS:-2000}
+    depends_on:
+      postgres-mono:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "${MONO_CPUS:-2}"
+          memory: ${MONO_MEMORY:-1g}
+    restart: unless-stopped
+
+  gateway-mono:
+    image: nginx:1.28-alpine
+    volumes:
+      - ./gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./gateway/monolith.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./gateway/storefront:/usr/share/nginx/html:ro
+    ports:
+      - "${MONO_PORT:-8081}:80"
+    depends_on:
+      - monolith
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 256m
+    restart: unless-stopped
+
+volumes:
+  pg-mono:
+
+networks:
+  default:
+    name: tokoku
+    external: true

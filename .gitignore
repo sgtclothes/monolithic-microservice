@@ -1,0 +1,3 @@
+node_modules/
+.env
+k6/results/*.json

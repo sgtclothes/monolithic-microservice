@@ -1,0 +1,47 @@
+# Short interval (5s) so changes during the live demo show up quickly in Grafana.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  # Applications
+  # dns_sd_configs: Prometheus queries Docker DNS -> automatically finds ALL
+  # replicas when a service is scaled (e.g. --scale order-service=3).
+  - job_name: monolith
+    dns_sd_configs:
+      - names: [monolith]
+        type: A
+        port: 9100
+        refresh_interval: 5s
+    relabel_configs:
+      - source_labels: [__meta_dns_name]
+        target_label: svc
+
+  - job_name: microservices
+    dns_sd_configs:
+      - names: [user-service, product-service, order-service, payment-service, notification-service]
+        type: A
+        port: 9100
+        refresh_interval: 5s
+    relabel_configs:
+      - source_labels: [__meta_dns_name]
+        target_label: svc
+
+  - job_name: thirdparty-mock
+    static_configs:
+      - targets: ["thirdparty-mock:4000"]
+
+  # Infrastructure
+  - job_name: cadvisor
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["cadvisor:8080"]
+
+  - job_name: rabbitmq
+    metrics_path: /metrics/per-object
+    static_configs:
+      - targets: ["rabbitmq:15692"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

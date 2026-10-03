@@ -1,0 +1,12 @@
+{
+  "name": "tokoku-apps-dev",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local development only (one npm install for every app). Docker images use each app's own package.json.",
+  "dependencies": {
+    "amqplib": "^0.10.8",
+    "express": "^5.1.0",
+    "pg": "^8.16.0",
+    "prom-client": "^15.1.3"
+  }
+}

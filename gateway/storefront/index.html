@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TokoKu</title>
+<style>
+  :root { --bg:#f8fafc; --card:#fff; --fg:#0f172a; --muted:#64748b; --line:#e2e8f0; --brand:#ea580c; --ok:#16a34a; --bad:#dc2626; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background:var(--bg); color:var(--fg); }
+  header { background:#fff; border-bottom:1px solid var(--line); padding:12px 16px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; position:sticky; top:0; z-index:2; }
+  header h1 { margin:0; font-size:1.3rem; color:var(--brand); }
+  .badge { padding:3px 10px; border-radius:999px; font-size:.75rem; font-weight:700; text-transform:uppercase; letter-spacing:.04em; }
+  .badge.monolith { background:#dbeafe; color:#1e40af; } .badge.microservices { background:#dcfce7; color:#166534; }
+  .meta { color:var(--muted); font-size:.8rem; margin-left:auto; font-family: ui-monospace, monospace; }
+  main { max-width:1200px; margin:0 auto; padding:16px; display:grid; grid-template-columns: 1fr 340px; gap:16px; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; }
+  .products { display:grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap:12px; }
+  .product { display:flex; flex-direction:column; gap:6px; }
+  .thumb { height:90px; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:2rem; }
+  .product h3 { font-size:.9rem; margin:0; } .price { font-weight:700; color:var(--brand); } .small { font-size:.75rem; color:var(--muted); }
+  button { font:inherit; border:0; border-radius:8px; padding:8px 12px; cursor:pointer; background:var(--brand); color:#fff; }
+  button.secondary { background:#e2e8f0; color:var(--fg); } button:disabled { opacity:.5; cursor:not-allowed; }
+  input, select { font:inherit; padding:7px 9px; border:1px solid var(--line); border-radius:8px; width:100%; }
+  .row { display:flex; gap:8px; align-items:center; } .row > * { flex:1; }
+  aside { display:flex; flex-direction:column; gap:16px; }
+  h2 { font-size:1rem; margin:0 0 10px; }
+  ul { list-style:none; padding:0; margin:0; } li { padding:6px 0; border-bottom:1px dashed var(--line); font-size:.85rem; }
+  .status-PAID, .status-SENT { color:var(--ok); font-weight:600; } .status-FAILED, .status-PAYMENT_FAILED, .status-PAYMENT_ERROR { color:var(--bad); font-weight:600; }
+  #toast { position:fixed; bottom:16px; left:50%; transform:translateX(-50%); background:#0f172a; color:#fff; padding:10px 16px; border-radius:8px; font-size:.85rem; display:none; max-width:90vw; }
+  .toolbar { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; } .toolbar select { width:auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>TokoKu</h1>
+  <span id="arch" class="badge">...</span>
+  <span class="meta" id="lastCall">-</span>
+</header>
+<main>
+  <section class="card">
+    <div class="toolbar">
+      <select id="category"><option value="">All categories</option></select>
+      <button class="secondary" id="prev">&laquo;</button>
+      <span id="page" class="small" style="align-self:center">page 1</span>
+      <button class="secondary" id="next">&raquo;</button>
+    </div>
+    <div class="products" id="products"></div>
+  </section>
+  <aside>
+    <section class="card" id="authCard">
+      <h2>Sign in</h2>
+      <div style="display:grid; gap:8px">
+        <input id="email" value="user1@tokoku.test">
+        <input id="password" type="password" value="password123">
+        <button id="login">Login</button>
+        <div class="small">Demo accounts: user1..user1000@tokoku.test / password123</div>
+      </div>
+    </section>
+    <section class="card">
+      <h2>Cart</h2>
+      <ul id="cart"><li class="small">Empty</li></ul>
+      <div class="row" style="margin-top:10px"><strong id="total">Rp0</strong><button id="checkout" disabled>Checkout</button></div>
+    </section>
+    <section class="card">
+      <h2>My orders</h2>
+      <ul id="orders"><li class="small">Log in to see your orders</li></ul>
+    </section>
+  </aside>
+</main>
+<div id="toast"></div>
+<script>
+const $ = (id) => document.getElementById(id);
+const rupiah = (n) => 'Rp' + Number(n).toLocaleString('id-ID');
+const EMOJI = { electronics:'📱', fashion:'👕', home:'🛋️', sports:'⚽', books:'📚', beauty:'💄', toys:'🧸', automotive:'🚗', food:'🍜', health:'💊' };
+const COLORS = ['#fee2e2','#ffedd5','#fef9c3','#dcfce7','#cffafe','#dbeafe','#ede9fe','#fce7f3','#f1f5f9','#ecfccb'];
+const state = { page: 1, category: '', token: sessionStorage.getItem('token'), cart: new Map(), products: new Map() };
+
+function toast(msg) { const t = $('toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 4000); }
+
+async function api(path, opts = {}) {
+  const started = performance.now();
+  const res = await fetch('/api' + path, {
+    ...opts,
+    headers: { 'content-type': 'application/json', ...(state.token ? { authorization: 'Bearer ' + state.token } : {}) },
+  });
+  const ms = Math.round(performance.now() - started);
+  $('lastCall').textContent = `${opts.method || 'GET'} ${path.split('?')[0]} → ${res.status} · ${ms} ms · served by ${res.headers.get('x-served-by') || '?'}`;
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((data.error && data.error.message) || res.statusText);
+  return data;
+}
+
+async function loadInfo() {
+  const info = await api('/info');
+  $('arch').textContent = info.arch; $('arch').className = 'badge ' + info.arch;
+  document.title = 'TokoKu · ' + info.arch;
+}
+
+async function loadProducts() {
+  const q = new URLSearchParams({ page: state.page, limit: 24 });
+  if (state.category) q.set('category', state.category);
+  const { items } = await api('/products?' + q);
+  $('page').textContent = 'page ' + state.page;
+  $('products').innerHTML = '';
+  for (const p of items) {
+    state.products.set(p.id, p);
+    const el = document.createElement('div');
+    el.className = 'product';
+    el.innerHTML = `<div class="thumb" style="background:${COLORS[p.id % COLORS.length]}">${EMOJI[p.category] || '🛍️'}</div>
+      <h3></h3><div class="price">${rupiah(p.price)}</div><div class="small">${p.category} · stock ${Number(p.stock).toLocaleString('id-ID')}</div>
+      <button>+ Cart</button>`;
+    el.querySelector('h3').textContent = p.name;
+    el.querySelector('button').onclick = () => { state.cart.set(p.id, Math.min(5, (state.cart.get(p.id) || 0) + 1)); renderCart(); };
+    $('products').appendChild(el);
+  }
+}
+
+function renderCart() {
+  const ul = $('cart'); ul.innerHTML = ''; let total = 0;
+  for (const [id, qty] of state.cart) {
+    const p = state.products.get(id); total += p.price * qty;
+    const li = document.createElement('li'); li.textContent = `${qty} × ${p.name} · ${rupiah(p.price * qty)}`; ul.appendChild(li);
+  }
+  if (!state.cart.size) ul.innerHTML = '<li class="small">Empty</li>';
+  $('total').textContent = rupiah(total);
+  $('checkout').disabled = !state.cart.size || !state.token;
+}
+
+async function loadOrders() {
+  if (!state.token) return;
+  const { items } = await api('/orders');
+  const ul = $('orders'); ul.innerHTML = '';
+  if (!items.length) ul.innerHTML = '<li class="small">No orders yet</li>';
+  for (const o of items.slice(0, 8)) {
+    const li = document.createElement('li');
+    li.innerHTML = `#${o.id} · ${rupiah(o.total)} · <span class="status-${o.status}">${o.status}</span> <span class="small" data-notif>email: …</span>`;
+    ul.appendChild(li);
+    api('/notifications?order_id=' + o.id).then(({ items }) => {
+      const n = items[0]; li.querySelector('[data-notif]').innerHTML = n ? `email: <span class="status-${n.status}">${n.status}</span> (${n.attempts}x)` : 'email: none yet';
+    }).catch(() => {});
+  }
+}
+
+$('login').onclick = async () => {
+  try {
+    const { token, user } = await api('/users/login', { method: 'POST', body: JSON.stringify({ email: $('email').value, password: $('password').value }) });
+    state.token = token; sessionStorage.setItem('token', token);
+    $('authCard').innerHTML = `<h2>Hi, ${user.name}</h2><button class="secondary" id="logout">Logout</button>`;
+    $('logout').onclick = () => { sessionStorage.removeItem('token'); location.reload(); };
+    renderCart(); loadOrders();
+  } catch (e) { toast('Login failed: ' + e.message); }
+};
+
+$('checkout').onclick = async () => {
+  $('checkout').disabled = true;
+  try {
+    const items = [...state.cart].map(([product_id, qty]) => ({ product_id, qty }));
+    const { order } = await api('/orders', { method: 'POST', body: JSON.stringify({ items }) });
+    toast(`Order #${order.id} paid successfully (${rupiah(order.total)})`);
+    state.cart.clear(); renderCart(); loadProducts();
+  } catch (e) { toast('Checkout failed: ' + e.message); }
+  finally { renderCart(); loadOrders(); }
+};
+
+$('prev').onclick = () => { if (state.page > 1) { state.page--; loadProducts(); } };
+$('next').onclick = () => { state.page++; loadProducts(); };
+$('category').onchange = (e) => { state.category = e.target.value; state.page = 1; loadProducts(); };
+Object.keys(EMOJI).forEach((c) => $('category').insertAdjacentHTML('beforeend', `<option value="${c}">${c}</option>`));
+
+loadInfo().catch(() => {});
+loadProducts().catch((e) => toast('Failed to load products: ' + e.message));
+if (state.token) { $('authCard').innerHTML = '<h2>Logged in</h2><button class="secondary" id="logout">Logout</button>'; $('logout').onclick = () => { sessionStorage.removeItem('token'); location.reload(); }; loadOrders(); }
+setInterval(loadOrders, 5000);
+</script>
+</body>
+</html>

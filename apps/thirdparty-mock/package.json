@@ -1,0 +1,10 @@
+{
+  "name": "tokoku-thirdparty-mock",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Simulated third-party services: Payment Gateway & Email Provider",
+  "dependencies": {
+    "express": "^5.1.0",
+    "prom-client": "^15.1.3"
+  }
+}

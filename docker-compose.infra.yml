@@ -1,0 +1,104 @@
+# =====================================================================
+#  SHARED INFRA: monitoring + third-party services + load generator
+#  Start this FIRST, before monolith / microservices:
+#    docker compose -f docker-compose.infra.yml up -d --build
+#
+#  All three compose projects share the "tokoku" network. Create it once:
+#    docker network create tokoku      (done automatically by ./scripts/demo.sh up)
+# =====================================================================
+name: tokoku-infra
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-remote-write-receiver # receives k6 metrics (remote write)
+      - --web.enable-lifecycle
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.0.2
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-tokoku}
+      # The audience can view dashboards without logging in (read-only).
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/tokoku-overview.json
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  # CPU / memory / network / throttling metrics PER CONTAINER
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.55.1
+    privileged: true
+    devices:
+      - /dev/kmsg
+    command:
+      - --housekeeping_interval=5s
+      - --docker_only=true
+      - --store_container_labels=false
+      - --whitelisted_container_labels=com.docker.compose.service,com.docker.compose.project
+      - --disable_metrics=percpu,sched,tcp,udp,disk,diskIO,hugetlb,referenced_memory,cpu_topology,resctrl
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  # Simulated Payment Gateway & Email Provider (used by both architectures)
+  # Chaos panel: http://localhost:4000
+  thirdparty-mock:
+    build:
+      context: ./apps
+      args:
+        APP_DIR: thirdparty-mock
+    image: tokoku/thirdparty-mock:latest
+    environment:
+      PORT: 4000
+    ports:
+      - "4000:4000"
+    restart: unless-stopped
+
+  # Load generator. Run it via: ./scripts/demo.sh k6 <scenario> <mono|ms>
+  # (ideally run k6 on a SEPARATE MACHINE, see docs/02-panduan-demo.md)
+  k6:
+    image: grafana/k6:1.1.0
+    profiles: ["k6"]
+    user: "0"
+    working_dir: /scripts
+    volumes:
+      - ./k6:/scripts
+    environment:
+      K6_PROMETHEUS_RW_SERVER_URL: http://prometheus:9090/api/v1/write
+      K6_PROMETHEUS_RW_TREND_STATS: p(50),p(95),p(99),avg,max
+      K6_PROMETHEUS_RW_PUSH_INTERVAL: 5s
+      MOCK_URL: http://thirdparty-mock:4000
+
+volumes:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  default:
+    name: tokoku
+    external: true

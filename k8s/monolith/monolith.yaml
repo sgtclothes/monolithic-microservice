@@ -1,0 +1,94 @@
+# MONOLITH: one Deployment containing every module. Scaling = duplicating the WHOLE app (2 CPU per pod).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: monolith
+  labels: { app: monolith, tokoku.io/arch: monolith }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: monolith }
+  template:
+    metadata:
+      labels: { app: monolith, tokoku.io/arch: monolith, tokoku.io/metrics: "true" }
+    spec:
+      terminationGracePeriodSeconds: 15
+      enableServiceLinks: false # do not inject *_PORT env vars from other Services
+      containers:
+        - name: app
+          image: tokoku/monolith:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: http, containerPort: 3000 }
+            - { name: metrics, containerPort: 9100 }
+          env:
+            - name: SERVICE_NAME
+              value: "monolith"
+            - name: WORKERS
+              value: "2"
+            - name: DATABASE_URL
+              value: "postgres://tokoku:tokoku@postgres:5432/tokoku"
+            - name: DB_POOL_MAX
+              value: "10"
+            - name: NOTIFICATION_MODE
+              value: "sync"
+            - name: THIRDPARTY_URL
+              value: "http://thirdparty-mock.tokoku-infra.svc.cluster.local:4000"
+            - name: JWT_SECRET
+              value: "tokoku-demo-secret"
+            - name: PASSWORD_HASH_ITERATIONS
+              value: "100000"
+            - name: FRAUD_CHECK_ROUNDS
+              value: "2000"
+          # requests = limits -> QoS "Guaranteed", same resources as the docker compose version
+          resources:
+            requests: { cpu: "2", memory: 1Gi }
+            limits: { cpu: "2", memory: 1Gi }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+            failureThreshold: 6
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: monolith
+  labels: { app: monolith }
+spec:
+  selector: { app: monolith }
+  ports:
+    - { name: http, port: 3000, targetPort: http }
+---
+# Headless service: DNS returns the IPs of ALL pods -> nginx balances load per request
+# and picks up new pods automatically on scale (same as Docker DNS in compose).
+apiVersion: v1
+kind: Service
+metadata:
+  name: monolith-headless
+spec:
+  clusterIP: None
+  selector: { app: monolith }
+  ports:
+    - { name: http, port: 3000, targetPort: http }
+
+---
+# Horizontal autoscaling: add replicas when average CPU > 70% of the request.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: monolith
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: monolith }
+  minReplicas: 1
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 60

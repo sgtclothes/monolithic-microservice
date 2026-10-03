@@ -1,0 +1,57 @@
+# Tells Prometheus (kube-prometheus-stack) which pods to scrape.
+# The `job` and `svc` labels match the docker compose version so the TokoKu
+# dashboards work without changes.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: tokoku-monolith
+  namespace: tokoku-mono
+spec:
+  selector:
+    matchLabels: { tokoku.io/metrics: "true" }
+  podMetricsEndpoints:
+    - port: metrics
+      interval: 5s
+      relabelings:
+        - { targetLabel: job, replacement: monolith }
+        - { sourceLabels: [__meta_kubernetes_pod_label_app], targetLabel: svc }
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: tokoku-microservices
+  namespace: tokoku-ms
+spec:
+  selector:
+    matchLabels: { tokoku.io/metrics: "true" }
+  podMetricsEndpoints:
+    - port: metrics
+      interval: 5s
+      relabelings:
+        - { targetLabel: job, replacement: microservices }
+        - { sourceLabels: [__meta_kubernetes_pod_label_app], targetLabel: svc }
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: rabbitmq
+  namespace: tokoku-ms
+spec:
+  selector:
+    matchLabels: { app: rabbitmq }
+  podMetricsEndpoints:
+    - port: prometheus
+      path: /metrics/per-object
+      interval: 5s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: thirdparty-mock
+  namespace: tokoku-infra
+spec:
+  selector:
+    matchLabels: { app: thirdparty-mock }
+  podMetricsEndpoints:
+    - port: http
+      interval: 5s

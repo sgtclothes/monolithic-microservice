@@ -1,0 +1,26 @@
+# Apply with:  ./scripts/k8s.sh apply ms
+# (needs --load-restrictor=LoadRestrictionsNone because it uses files from the gateway/ folder)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: tokoku-ms
+resources:
+  - namespace.yaml
+  - postgres.yaml
+  - rabbitmq.yaml
+  - user-service.yaml
+  - product-service.yaml
+  - order-service.yaml
+  - payment-service.yaml
+  - notification-service.yaml
+  - gateway.yaml
+configMapGenerator:
+  - name: gateway-nginx-main
+    files: [../../gateway/nginx.conf]
+  - name: gateway-nginx-site
+    files: [default.conf=gateway.conf]
+  - name: storefront
+    files: [../../gateway/storefront/index.html]
+  - name: postgres-init
+    files: [01-init.sql=../../db/microservices-init.sql]
+generatorOptions:
+  disableNameSuffixHash: false
